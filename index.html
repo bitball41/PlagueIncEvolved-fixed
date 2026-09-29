@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <base href="https://cdn.jsdelivr.net/gh/Reeyuki/PlagueIncEvolved/" />
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no" />
     <title>Plague Inc</title>
 
     <style>
@@ -25,6 +25,7 @@
       #loader {
         position: fixed;
         inset: 0;
+        z-index: 2;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -33,6 +34,10 @@
         background: #0b0b0b;
         color: white;
         font-family: sans-serif;
+      }
+
+      #loader.ready {
+        cursor: pointer;
       }
 
       #bar {
@@ -62,8 +67,11 @@
     <script src="Build/bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js"></script>
 
     <script>
-      const baseBuild = "https://cdn.jsdelivr.net/gh/Reeyuki/PlagueIncEvolved/Build/";
-      const base = "https://cdn.jsdelivr.net/gh/Reeyuki/PlagueIncEvolved/";
+      // Same folder as this page. A <base> tag pointing at jsDelivr loads the
+      // loader from the CDN (and that copy pops a blocking alert before anything runs).
+      const root = new URL(".", document.baseURI);
+      const baseBuild = new URL("Build/", root).href;
+      const streamingAssetsUrl = new URL("StreamingAssets", root).href;
 
       const MAX_RETRIES = 3;
       const RETRY_DELAY_MS = 1000;
@@ -167,13 +175,28 @@
         const wasmUrl = URL.createObjectURL(new Blob([wasm], { type: "application/wasm" }));
         const dataUrl = URL.createObjectURL(new Blob([data]));
 
-        document.getElementById("loader").style.display = "none";
+        const loader = document.getElementById("loader");
+        const text = document.getElementById("text");
+        text.textContent = "Click to play";
+        document.getElementById("fill").style.width = "100%";
+        loader.classList.add("ready");
 
-        createUnityInstance(document.querySelector("#unity-canvas"), {
+        // Unity's intro video and audio get blocked unless startup happens
+        // inside a click. Without that, the page sits on a black canvas.
+        await new Promise(function (resolve) {
+          loader.addEventListener("click", resolve, { once: true });
+        });
+
+        loader.style.display = "none";
+
+        const canvas = document.querySelector("#unity-canvas");
+        canvas.focus();
+
+        await createUnityInstance(canvas, {
           dataUrl: dataUrl,
           frameworkUrl: baseBuild + "b4b58f3ff6d98fbfb83482e25e0e9a5c.framework.js",
           codeUrl: wasmUrl,
-          streamingAssetsUrl: base + "StreamingAssets",
+          streamingAssetsUrl: streamingAssetsUrl,
           companyName: "Ndemic Creations",
           productName: "Plague Inc",
           productVersion: "1.18.3.2"
@@ -181,7 +204,10 @@
       }
 
       start().catch(function (err) {
-        document.getElementById("text").textContent = "Error: " + err.message;
+        const loader = document.getElementById("loader");
+        loader.style.display = "flex";
+        loader.classList.remove("ready");
+        document.getElementById("text").textContent = "Error: " + (err && err.message ? err.message : err);
         console.error(err);
       });
     </script>
