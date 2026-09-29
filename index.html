@@ -64,14 +64,44 @@
 
     <canvas id="unity-canvas"></canvas>
 
-    <script src="Build/bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js"></script>
-
     <script>
-      // Same folder as this page. A <base> tag pointing at jsDelivr loads the
-      // loader from the CDN (and that copy pops a blocking alert before anything runs).
-      const root = new URL(".", document.baseURI);
+      // Opening this file from Downloads (file://) cannot fetch the local Build
+      // parts. Chrome blocks those reads. Pull them from jsDelivr instead.
+      // A normal http(s) host uses the copies sitting next to this page.
+      // jsDelivr refuses this repo past 50 MB ("Package size exceeded"), so a
+      // downloaded html file has to pull the build from the copy that already
+      // serves it. http(s) hosts use the files next to this page.
+      const CDN = "https://cdn.jsdelivr.net/gh/Reeyuki/PlagueIncEvolved/";
+      const local = location.protocol !== "file:";
+      const root = local ? new URL(".", document.baseURI).href : CDN;
       const baseBuild = new URL("Build/", root).href;
       const streamingAssetsUrl = new URL("StreamingAssets", root).href;
+      const loaderName = "bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js";
+
+      function loadScript(src) {
+        return new Promise(function (resolve, reject) {
+          const script = document.createElement("script");
+          script.src = src;
+          script.onload = function () {
+            if (typeof createUnityInstance === "function") resolve();
+            else reject(new Error("Loader loaded but createUnityInstance is missing"));
+          };
+          script.onerror = function () {
+            reject(new Error("Could not load " + src));
+          };
+          document.body.appendChild(script);
+        });
+      }
+
+      // file:// can still load a script that sits next to the html. If that
+      // file isn't there, use the copy with the blocking alert removed.
+      const loaderReady = local
+        ? loadScript(baseBuild + loaderName)
+        : loadScript(new URL("Build/" + loaderName, document.baseURI).href).catch(function () {
+            return loadScript(
+              "https://cdn.jsdelivr.net/gh/bitball41/PlagueIncEvolved-fixed@a3aee51/Build/" + loaderName
+            );
+          });
 
       const MAX_RETRIES = 3;
       const RETRY_DELAY_MS = 1000;
@@ -191,6 +221,7 @@
 
         const canvas = document.querySelector("#unity-canvas");
         canvas.focus();
+        await loaderReady;
 
         await createUnityInstance(canvas, {
           dataUrl: dataUrl,
