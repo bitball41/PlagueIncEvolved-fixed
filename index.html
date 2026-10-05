@@ -62,23 +62,61 @@
       </div>
     </div>
 
-    <canvas id="unity-canvas"></canvas>
+    <canvas id="unity-canvas" tabindex="0"></canvas>
 
     <script>
-      // Opening this file from Downloads (file://) cannot fetch the local Build
-      // parts. Chrome blocks those reads. Pull them from jsDelivr instead.
-      // A normal http(s) host uses the copies sitting next to this page.
-      // jsDelivr refuses this repo past 50 MB ("Package size exceeded"), so a
-      // downloaded html file has to pull the build from the copy that already
-      // serves it. http(s) hosts use the files next to this page.
-      const CDN = "https://cdn.jsdelivr.net/gh/Reeyuki/PlagueIncEvolved/";
-      const local = location.protocol !== "file:";
-      const root = local ? new URL(".", document.baseURI).href : CDN;
-      const baseBuild = new URL("Build/", root).href;
-      const streamingAssetsUrl = new URL("StreamingAssets", root).href;
+      // An HTML viewer hosts the page, not its Build/ directory. Probe for a
+      // real local build, then fall back to this repository's pinned assets.
+      // GitHub Raw supports CORS and does not have jsDelivr's package-size cap.
+      const REMOTE_ROOT =
+        "https://raw.githubusercontent.com/bitball41/PlagueIncEvolved-fixed/3f45bcfd2c54e1d012b6911a2ff317193d73f00f/";
       const loaderName = "bb0d9ecdb05db3e84da20bd14a4f84dc.loader.js";
+      const frameworkName = "b4b58f3ff6d98fbfb83482e25e0e9a5c.framework.js";
 
-      function loadScript(src) {
+      async function fetchScript(url) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          const response = await fetch(url, { signal: controller.signal });
+          if (!response.ok) throw new Error("HTTP " + response.status + " for " + url);
+          const source = await response.text();
+          if (!source.trim() || source.trimStart().startsWith("<")) {
+            throw new Error("Expected JavaScript from " + url);
+          }
+          return source;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      async function resolveAssets() {
+        const roots = [];
+        const pageBase = new URL(document.baseURI);
+        if (pageBase.protocol === "http:" || pageBase.protocol === "https:") {
+          roots.push(new URL(".", pageBase).href);
+        }
+        roots.push(REMOTE_ROOT);
+
+        let lastError;
+        for (const root of new Set(roots)) {
+          try {
+            const source = await fetchScript(new URL("Build/" + loaderName, root).href);
+            if (!/function\s+createUnityInstance\s*\(/.test(source)) {
+              throw new Error("This host does not contain the Unity build");
+            }
+            return { root, source };
+          } catch (err) {
+            lastError = err;
+            console.warn("Could not use assets at " + root + ":", err.message);
+          }
+        }
+        throw lastError;
+      }
+
+      function loadScript(source) {
+        // Raw GitHub sends JS as text/plain with nosniff. Fetch it with CORS,
+        // then execute a JavaScript Blob instead of using a raw script URL.
+        const src = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
         return new Promise(function (resolve, reject) {
           const script = document.createElement("script");
           script.src = src;
@@ -90,25 +128,17 @@
             reject(new Error("Could not load " + src));
           };
           document.body.appendChild(script);
+        }).finally(function () {
+          URL.revokeObjectURL(src);
         });
       }
-
-      // file:// can still load a script that sits next to the html. If that
-      // file isn't there, use the copy with the blocking alert removed.
-      const loaderReady = local
-        ? loadScript(baseBuild + loaderName)
-        : loadScript(new URL("Build/" + loaderName, document.baseURI).href).catch(function () {
-            return loadScript(
-              "https://cdn.jsdelivr.net/gh/bitball41/PlagueIncEvolved-fixed@a3aee51/Build/" + loaderName
-            );
-          });
 
       const MAX_RETRIES = 3;
       const RETRY_DELAY_MS = 1000;
 
       // Per-part progress tracking
       const partProgress = new Map();
-      const totalGuess = 317 * 1024 * 1024;
+      const totalGuess = 331138688;
 
       function sleep(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));
@@ -171,7 +201,7 @@
         { name: "3719aa6c33bf126ed64864ee5fc2fafc.data", parts: 15 }
       ];
 
-      function buildUrls(file) {
+      function buildUrls(file, baseBuild) {
         const urls = [];
         for (let i = 0; i < file.parts; i++) {
           urls.push(baseBuild + file.name + ".part" + String(i).padStart(2, "0"));
@@ -179,8 +209,8 @@
         return urls;
       }
 
-      async function loadFile(file) {
-        const urls = buildUrls(file);
+      async function loadFile(file, baseBuild) {
+        const urls = buildUrls(file, baseBuild);
 
         // All parts fetched in parallel with per-part retry and streaming progress
         const buffers = await Promise.all(urls.map((url) => fetchPartWithRetry(url)));
@@ -199,9 +229,22 @@
       }
 
       async function start() {
-        // wasm and data files loaded fully in parallel
-        const [wasm, data] = await Promise.all([loadFile(files[0]), loadFile(files[1])]);
+        document.getElementById("text").textContent = "Connecting to game files…";
+        const assets = await resolveAssets();
+        const baseBuild = new URL("Build/", assets.root).href;
+        const streamingAssetsUrl = new URL("StreamingAssets", assets.root).href;
+        updateUI();
 
+        // Prepare both scripts before enabling play so startup stays inside
+        // the user's click, including in a sandboxed srcdoc preview.
+        const [, framework, wasm, data] = await Promise.all([
+          loadScript(assets.source),
+          fetchScript(baseBuild + frameworkName),
+          loadFile(files[0], baseBuild),
+          loadFile(files[1], baseBuild)
+        ]);
+
+        const frameworkUrl = URL.createObjectURL(new Blob([framework], { type: "text/javascript" }));
         const wasmUrl = URL.createObjectURL(new Blob([wasm], { type: "application/wasm" }));
         const dataUrl = URL.createObjectURL(new Blob([data]));
 
@@ -221,17 +264,18 @@
 
         const canvas = document.querySelector("#unity-canvas");
         canvas.focus();
-        await loaderReady;
-
         await createUnityInstance(canvas, {
           dataUrl: dataUrl,
-          frameworkUrl: baseBuild + "b4b58f3ff6d98fbfb83482e25e0e9a5c.framework.js",
+          frameworkUrl: frameworkUrl,
           codeUrl: wasmUrl,
           streamingAssetsUrl: streamingAssetsUrl,
           companyName: "Ndemic Creations",
           productName: "Plague Inc",
           productVersion: "1.18.3.2"
         });
+        URL.revokeObjectURL(frameworkUrl);
+        URL.revokeObjectURL(wasmUrl);
+        URL.revokeObjectURL(dataUrl);
       }
 
       start().catch(function (err) {
